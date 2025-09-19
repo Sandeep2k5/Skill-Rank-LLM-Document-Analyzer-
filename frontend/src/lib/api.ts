@@ -10,7 +10,12 @@ export interface Document {
   };
   analysis: {
     missing_fields: string[];
+    incomplete_fields: string[];
     recommendations: string[];
+    risk_factors: string[];
+    compliance_notes: string[];
+    completeness_score: number;
+    critical_issues: string[];
   };
   message: string;
 }
@@ -24,7 +29,12 @@ export interface AnalysisResult {
   };
   analysis: {
     missing_fields: string[];
+    incomplete_fields: string[];
     recommendations: string[];
+    risk_factors: string[];
+    compliance_notes: string[];
+    completeness_score: number;
+    critical_issues: string[];
   };
 }
 
