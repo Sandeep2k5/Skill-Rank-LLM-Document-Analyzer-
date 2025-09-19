@@ -87,8 +87,43 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # Field requirements for different document types
 REQUIRED_FIELDS = {
-    "Contract": ["party_1", "party_2", "signature", "date", "payment_terms"],
-    "Invoice": ["invoice_number", "amount", "due_date", "tax", "bill_to", "bill_from"]
+    "Contract": [
+        "party_names", "effective_date", "contract_term", "payment_terms", 
+        "scope_of_work", "termination_clause", "governing_law", "signatures",
+        "confidentiality", "liability"
+    ],
+    "Invoice": [
+        "invoice_number", "amount", "due_date", "tax", "bill_to", "bill_from",
+        "payment_terms", "itemized_list", "subtotal", "total"
+    ]
+}
+
+# Field descriptions for better context
+FIELD_DESCRIPTIONS = {
+    "Contract": {
+        "party_names": "Names of all parties involved in the contract",
+        "effective_date": "Start date of the contract",
+        "contract_term": "Duration or term of the contract",
+        "payment_terms": "Terms and conditions of payment",
+        "scope_of_work": "Detailed description of services or deliverables",
+        "termination_clause": "Conditions for contract termination",
+        "governing_law": "Jurisdiction and applicable laws",
+        "signatures": "Signatures of all parties",
+        "confidentiality": "Confidentiality and non-disclosure terms",
+        "liability": "Liability and indemnification clauses"
+    },
+    "Invoice": {
+        "invoice_number": "Unique identifier for the invoice",
+        "amount": "Total amount to be paid",
+        "due_date": "Payment deadline",
+        "tax": "Tax amounts and rates",
+        "bill_to": "Client billing information",
+        "bill_from": "Company/sender information",
+        "payment_terms": "Payment conditions and terms",
+        "itemized_list": "Detailed list of products/services",
+        "subtotal": "Sum before taxes and adjustments",
+        "total": "Final amount including all charges"
+    }
 }
 
 # Set up the generation configuration for JSON output
@@ -118,37 +153,84 @@ def classify_document(text):
         return {"document_type": "Error", "confidence_score": 0.0}
 
 def analyze_missing_fields(text, doc_type):
-    """Uses Google Gemini to find missing fields based on document type."""
+    """Uses Google Gemini to find missing fields and analyze document completeness."""
     if doc_type not in REQUIRED_FIELDS:
         return {"missing_fields": [], "recommendations": ["Document type does not have a defined set of required fields."]}
 
     required = REQUIRED_FIELDS[doc_type]
+    field_desc = FIELD_DESCRIPTIONS[doc_type]
+    
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
         prompt = f"""
-        You are an expert document analyst. Analyze the text from a document identified as a "{doc_type}".
-        The required fields for this document type are: {', '.join(required)}.
+        You are an expert document analyst specializing in {doc_type.lower()} analysis. 
+        Analyze the following document text thoroughly and provide a detailed assessment.
 
-        Your task is to identify which of these required fields are missing from the text and provide actionable recommendations.
+        Required fields for a {doc_type}:
+        {json.dumps(field_desc, indent=2)}
 
-        Return your response as a JSON object with two keys:
-        1. "missing_fields": A list of strings, where each string is a missing field name.
-        2. "recommendations": A list of strings, with specific, actionable suggestions for completing the document.
+        Analyze the document for these aspects:
+        1. Present/Missing Fields
+        2. Quality and Completeness
+        3. Legal Compliance
+        4. Potential Risks
+        5. Best Practices
+
+        Return your response as a JSON object with these keys:
+        1. "missing_fields": List of missing required fields
+        2. "incomplete_fields": List of fields that are present but need improvement
+        3. "recommendations": List of specific, actionable recommendations for each issue
+        4. "risk_factors": List of potential risks or concerns identified
+        5. "compliance_notes": List of compliance-related observations
+        6. "completeness_score": Number between 0-100 indicating overall document quality
+        7. "critical_issues": List of high-priority issues that need immediate attention
 
         Document Text:
         ---
         {text[:8000]}
         ---
+
+        Provide detailed, professional analysis focusing on both technical completeness and practical business implications.
         """
         response = model.generate_content(prompt, generation_config=json_generation_config)
         result = json.loads(response.text)
+        
+        # Ensure all expected fields are present in the response
+        required_keys = ["missing_fields", "incomplete_fields", "recommendations", 
+                        "risk_factors", "compliance_notes", "completeness_score", 
+                        "critical_issues"]
+        for key in required_keys:
+            if key not in result:
+                result[key] = [] if key != "completeness_score" else 0
+                
         return result
     except Exception as e:
         print(f"Error in Gemini missing fields analysis: {e}")
         return {"missing_fields": ["Analysis Error"], "recommendations": ["Could not perform analysis due to an API error."]}
 
 # --- API ROUTES (No changes needed below this line) ---
+@app.route('/documents', methods=['GET'])
+def get_documents():
+    """Get a list of all uploaded documents."""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        'SELECT d.id as document_id, d.filename, r.doc_type, r.confidence '
+        'FROM documents d LEFT JOIN analysis_results r ON d.id = r.doc_id '
+        'ORDER BY d.id DESC'
+    )
+    documents = cursor.fetchall()
+    
+    return jsonify([{
+        'document_id': doc['document_id'],
+        'filename': doc['filename'],
+        'classification': {
+            'document_type': doc['doc_type'] if doc['doc_type'] else 'Unknown',
+            'confidence_score': doc['confidence'] if doc['confidence'] else 0.0
+        }
+    } for doc in documents]), 200
+
 @app.route('/upload', methods=['POST'])
 def upload_and_analyze_document():
     if 'file' not in request.files:
@@ -195,7 +277,15 @@ def upload_and_analyze_document():
             "document_id": doc_id,
             "filename": filename,
             "classification": classification_result,
-            "analysis": analysis_result
+            "analysis": {
+                "missing_fields": analysis_result.get("missing_fields", []),
+                "incomplete_fields": analysis_result.get("incomplete_fields", []),
+                "recommendations": analysis_result.get("recommendations", []),
+                "risk_factors": analysis_result.get("risk_factors", []),
+                "compliance_notes": analysis_result.get("compliance_notes", []),
+                "completeness_score": analysis_result.get("completeness_score", 0),
+                "critical_issues": analysis_result.get("critical_issues", [])
+            }
         }), 201
     else:
         return jsonify({"error": "File type not allowed"}), 400
@@ -204,28 +294,59 @@ def upload_and_analyze_document():
 def get_analysis_result(doc_id):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute(
-        'SELECT d.filename, r.doc_type, r.confidence, r.missing_fields, r.recommendations '
-        'FROM documents d JOIN analysis_results r ON d.id = r.doc_id WHERE d.id = ?',
-        (doc_id,)
-    )
-    result = cursor.fetchone()
+    try:
+        # Get document metadata and content
+        cursor.execute(
+            'SELECT d.id, d.filename, d.content, r.doc_type, r.confidence '
+            'FROM documents d '
+            'LEFT JOIN analysis_results r ON d.id = r.doc_id '
+            'WHERE d.id = ?',
+            (doc_id,)
+        )
+        result = cursor.fetchone()
+        
+        if result is None:
+            return jsonify({"error": "Document not found"}), 404
 
-    if result is None:
-        return jsonify({"error": "Analysis not found for the given document ID"}), 404
+        # Get or re-analyze the document
+        doc_type = result['doc_type'] or 'Unknown'
+        analysis_result = analyze_missing_fields(result['content'], doc_type)
 
-    return jsonify({
-        "document_id": doc_id,
-        "filename": result['filename'],
-        "classification": {
-            "document_type": result['doc_type'],
-            "confidence_score": result['confidence']
-        },
-        "analysis": {
-            "missing_fields": json.loads(result['missing_fields']),
-            "recommendations": json.loads(result['recommendations'])
+        # Add error handlers for missing fields
+        if not isinstance(analysis_result, dict):
+            analysis_result = {
+                "missing_fields": [],
+                "incomplete_fields": [],
+                "recommendations": ["Analysis failed"],
+                "risk_factors": [],
+                "compliance_notes": [],
+                "completeness_score": 0,
+                "critical_issues": ["Failed to analyze document"]
+            }
+
+        response_data = {
+            "document_id": result['id'],
+            "filename": result['filename'],
+            "classification": {
+                "document_type": doc_type,
+                "confidence_score": result['confidence'] or 0.0
+            },
+            "analysis": {
+                "missing_fields": analysis_result.get("missing_fields", []),
+                "incomplete_fields": analysis_result.get("incomplete_fields", []),
+                "recommendations": analysis_result.get("recommendations", []),
+                "risk_factors": analysis_result.get("risk_factors", []),
+                "compliance_notes": analysis_result.get("compliance_notes", []),
+                "completeness_score": analysis_result.get("completeness_score", 0),
+                "critical_issues": analysis_result.get("critical_issues", [])
+            }
         }
-    }), 200
+        
+        print("Sending response:", json.dumps(response_data, indent=2))
+        return jsonify(response_data), 200
+    except Exception as e:
+        print(f"Error in /analysis endpoint: {e}")
+        return jsonify({"error": f"Failed to retrieve analysis: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
