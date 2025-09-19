@@ -1,0 +1,6 @@
+Flask==3.0.3
+PyMuPDF==1.24.1
+werkzeug==3.0.3
+google-generativeai==0.7.1 # Swapped from openai
+python-dotenv==1.0.1 
+httpcore<1.0 
